@@ -1,0 +1,22 @@
+# Ignore Autogluon artifacts and caches
+autogluon*
+.autogluon/
+autogluon_models/
+
+# Ignore Weights and common model files
+*.pth
+*.pt
+*.ckpt
+*.zip
+
+# Ignore WandB run files and caches
+wandb*
+.wandb/
+wandb/
+
+# Project caches and envs
+__pycache__/
+*.pyc
+.venv/
+.env
+.vscode/
