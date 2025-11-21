@@ -4,3 +4,4 @@ datasets
 torch
 sentencepiece
 accelerate
+nbformat
