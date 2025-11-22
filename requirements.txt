@@ -1,0 +1,7 @@
+transformers
+tokenizers
+datasets
+torch
+sentencepiece
+accelerate
+nbformat
