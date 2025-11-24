@@ -1,13 +1,7 @@
-# gen'd temp pred.py that uses current params set in preproces.ipynb. Saved model params in model_bundle.pkl
-
 import pickle
 import numpy as np
 import pandas as pd
 import re
-
-###############################################################################
-# Load saved model bundle (must be in same directory as this script)
-###############################################################################
 
 with open("model_bundle.pkl", "rb") as f:
     BUNDLE = pickle.load(f)
@@ -27,9 +21,8 @@ NUM_CLASSES = int(BUNDLE["num_classes"])
 
 ENSEMBLE_STATES = BUNDLE["ensemble_states"]        # list of parameter dicts for each model
 
-###############################################################################
-# Text preprocessing: tokenization + n-grams + TF-IDF transform
-###############################################################################
+
+# tfidf preprocessing
 
 STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "at",
@@ -41,7 +34,6 @@ TOKEN_PATTERN = re.compile(r"\b\w+\b", flags=re.UNICODE)
 
 
 def tokenize(text, lower=True, remove_stopwords=True, stopwords=STOPWORDS):
-    """Tokenize text using the same logic as in training."""
     if not isinstance(text, str):
         return []
     if lower:
@@ -53,7 +45,6 @@ def tokenize(text, lower=True, remove_stopwords=True, stopwords=STOPWORDS):
 
 
 def generate_ngrams(tokens, ngram_range=(1, 1)):
-    """Generate n-grams as during training."""
     min_n, max_n = ngram_range
     L = len(tokens)
     all_ngrams = []
@@ -66,17 +57,8 @@ def generate_ngrams(tokens, ngram_range=(1, 1)):
 
 
 def transform_tfidf_column(text_series, model_cfg):
-    """
-    Transform a single text column into TF-IDF features using a saved model.
-
-    model_cfg should contain:
-      - "vocab": dict term -> index
-      - "idf": np.array (float32)
-      - "ngram_range"
-      - "remove_stopwords" (optional, default True)
-    """
     vocab = model_cfg["vocab"]
-    idf = model_cfg["idf"]         # np.array, already float32
+    idf = model_cfg["idf"]
     ngram_range = model_cfg.get("ngram_range", (1, 1))
     remove_stopwords = model_cfg.get("remove_stopwords", True)
 
@@ -84,13 +66,11 @@ def transform_tfidf_column(text_series, model_cfg):
     V = len(vocab)
     X = np.zeros((N, V), dtype=np.float32)
 
-    # Build term-frequency * idf matrix
     for i, raw in enumerate(text_series):
         tokens = tokenize(raw, lower=True, remove_stopwords=remove_stopwords)
         terms = generate_ngrams(tokens, ngram_range)
         if not terms:
             continue
-        # Count only terms in vocab
         counts = {}
         for t in terms:
             if t in vocab:
@@ -103,7 +83,6 @@ def transform_tfidf_column(text_series, model_cfg):
             tf = cnt / doc_len
             X[i, j] = tf * idf[j]
 
-    # L2 normalize rows
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0.0] = 1.0
     X = X / norms
@@ -112,7 +91,6 @@ def transform_tfidf_column(text_series, model_cfg):
 
 
 def transform_all_text(df):
-    """Transform all text columns and horizontally stack them."""
     X_blocks = []
     for col in TEXT_COLS:
         model_cfg = TFIDF_MODELS[col]
@@ -126,10 +104,8 @@ def transform_all_text(df):
         X_blocks.append(X_col)
     return np.hstack(X_blocks) if X_blocks else np.zeros((len(df), 0), dtype=np.float32)
 
-###############################################################################
-# Ordinal preprocessing
-###############################################################################
 
+# ordinal preprocessing
 
 def transform_ordinal(df):
     """
@@ -155,10 +131,8 @@ def transform_ordinal(df):
 
     return X_ord
 
-###############################################################################
-# Multi-select categorical preprocessing
-###############################################################################
 
+# categorical preprocessing
 
 def parse_multiselect(raw_value, choice_list):
     if pd.isna(raw_value):
@@ -174,9 +148,6 @@ def parse_multiselect(raw_value, choice_list):
 
 
 def transform_multiselect_categorical(df):
-    """
-    Transform multi-select categorical columns into one-hot vectors.
-    """
     N = len(df)
     M = len(CAT_MULTI_SELECT_CHOICES)
     total_features = len(CAT_COLS) * M
@@ -195,18 +166,12 @@ def transform_multiselect_categorical(df):
 
     return X
 
-###############################################################################
-# Neural network forward pass for inference
-###############################################################################
-
+# nn forward pass for inference
 
 def forward_one_model(X, state, eps=1e-5):
     """
-    Forward pass of the trained network using saved parameters (no dropout).
-    Architecture:
         X -> fc1 -> batchnorm (running stats) -> ReLU -> fc2 -> logits
     """
-    # Unpack parameters
     W1 = state["fc1_W"]
     b1 = state["fc1_b"]
     gamma = state["bn1_gamma"]
@@ -216,20 +181,15 @@ def forward_one_model(X, state, eps=1e-5):
     W2 = state["fc2_W"]
     b2 = state["fc2_b"]
 
-    # Ensure float32
     X = X.astype(np.float32, copy=False)
 
-    # fc1
     z1 = X @ W1 + b1  # shape: (N, hidden_units)
 
-    # BatchNorm using running stats
     x_norm = (z1 - running_mean) / np.sqrt(running_var + eps)
     bn_out = gamma * x_norm + beta
 
-    # ReLU
     h1 = np.maximum(0.0, bn_out)
 
-    # fc2
     logits = h1 @ W2 + b2  # shape: (N, num_classes)
 
     return logits
@@ -247,13 +207,9 @@ def ensemble_logits(X):
     avg_logits = np.mean(all_logits, axis=0)
     return avg_logits
 
-###############################################################################
-# Main prediction function
-###############################################################################
 
+# prepare data
 
-# You may need to adjust these if your raw CSV has different headers.
-# These were the names you used during training:
 RENAMED_COLUMNS_WITH_TARGET = [
     "id",
     "best_tasks_free",
@@ -270,64 +226,51 @@ RENAMED_COLUMNS_WITH_TARGET = [
 
 RENAMED_COLUMNS_NO_TARGET = RENAMED_COLUMNS_WITH_TARGET[:-1]
 
-
+# assumes data is in same format as the training data. 
+# Note* markus test seems to fail if target is dropped, this extra logic is to handels cases if there are 10 or 11 columns
+# so we can also test with the training data
 def _prepare_columns(df):
-    """
-    Try to ensure the dataframe has the same column names as used during training.
-    Handles both cases:
-      - CSV with target column
-      - CSV without target column
-    If the CSV already has the correct names, nothing is changed.
-    """
+    df = df.copy()
     n_cols = df.shape[1]
 
     if n_cols == len(RENAMED_COLUMNS_WITH_TARGET):
-        df = df.copy()
+        # 11-column file
         df.columns = RENAMED_COLUMNS_WITH_TARGET
-        # Drop target if present – we don't use it at prediction time
-        df = df.drop(columns=["target"], errors="ignore")
+        df = df.drop(columns=["target", "label"], errors="ignore")
     elif n_cols == len(RENAMED_COLUMNS_NO_TARGET):
-        df = df.copy()
+        # 10-column test file
         df.columns = RENAMED_COLUMNS_NO_TARGET
-    # else: assume user has already given correct column names
+    else:
+        # fallback
+        df = df.drop(columns=["target", "label"], errors="ignore")
 
     return df
 
 
 def predict_all(csv_path):
     """
-    Main entry point required by the assignment.
-    Takes a CSV file path and returns predictions (as an array of labels).
+    Takes a CSV file path and returns predictions
     """
-    # Load data
+    # prepare data
     df = pd.read_csv(csv_path)
-
-    # Ensure columns look like training
     df = _prepare_columns(df)
 
-    # 1. Text features
+    # preprocessing
     X_text = transform_all_text(df)
-
-    # 2. Ordinal features
     X_ord = transform_ordinal(df)
-
-    # 3. Categorical multi-select features
     X_cat = transform_multiselect_categorical(df)
-
-    # 4. Combine all features
     X_all = np.hstack([X_text, X_ord, X_cat]).astype(np.float32)
 
-    # 5. Ensemble logits and predictions
+    # prediction
     logits = ensemble_logits(X_all)
     pred_indices = np.argmax(logits, axis=1)
 
-    # Map back to original string labels
+    # mapping to original model labels
     preds = UNIQUE_CLASSES[pred_indices]
 
     return preds
 
 
-# Optional: allow running from command line for local testing
 if __name__ == "__main__":
     import sys
 
